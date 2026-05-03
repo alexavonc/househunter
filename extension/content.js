@@ -1,19 +1,9 @@
 /**
  * PropertyGuru Shortlist scraper — content script.
  *
- * PropertyGuru renders listing cards with these key selectors (as of 2024-25):
- *   Listing card wrapper : .listing-card  OR  [data-listing-id]
- *   Project / title      : .listing-title a, h3.listing-name a
- *   Price                : .price, .listing-price span
- *   Price per sqft       : .price-psf, [data-automation-id="listing-card-psf"]
- *   Size                 : .listing-floor-area, [data-automation-id="listing-floor-area"]
- *   Address              : .listing-location, .listing-address
- *   Beds                 : [data-automation-id="listing-card-bedroom"], .listing-rooms span:first-child
- *   Baths                : [data-automation-id="listing-card-bathroom"], .listing-rooms span:nth-child(2)
- *   MRT                  : .listing-mrt, [data-automation-id="listing-mrt"]
- *   Listing URL          : .listing-title a[href], h3.listing-name a[href]
- *
- * Because the DOM may change, we cascade through multiple selector candidates.
+ * Handles traditional page-number pagination by fetching each subsequent
+ * page as HTML, parsing it with DOMParser, and combining all results.
+ * Also falls back to clicking a "Load More" button if pagination is absent.
  */
 
 (function () {
@@ -38,7 +28,6 @@
 
   // ── Parse a single card element ──────────────────────────────────────────
   function parseCard(card) {
-    // Title / project name
     const titleNode = first(card,
       '.listing-title a',
       'h3.listing-name a',
@@ -48,13 +37,11 @@
     );
     const title = text(titleNode);
 
-    // Listing URL
     let url = attr(titleNode, 'href') || attr(first(card, 'a[href*="/property-for-"]'), 'href');
     if (url && !url.startsWith('http')) {
       url = 'https://www.propertyguru.com.sg' + url;
     }
 
-    // Price
     const priceNode = first(card,
       '[data-automation-id="listing-card-price"]',
       '.price span',
@@ -64,7 +51,6 @@
     );
     const price = text(priceNode);
 
-    // Price per sqft
     const psfNode = first(card,
       '[data-automation-id="listing-card-psf"]',
       '.price-psf',
@@ -72,7 +58,6 @@
     );
     const pricePerSqft = text(psfNode);
 
-    // Size / floor area
     const sizeNode = first(card,
       '[data-automation-id="listing-floor-area"]',
       '[data-automation-id="listing-card-floor-area"]',
@@ -82,7 +67,6 @@
     );
     const size = text(sizeNode);
 
-    // Address / district
     const addressNode = first(card,
       '[data-automation-id="listing-card-address"]',
       '.listing-location',
@@ -92,7 +76,6 @@
     );
     const address = text(addressNode);
 
-    // Bedrooms
     const bedNode = first(card,
       '[data-automation-id="listing-card-bedroom"]',
       '[data-automation-id="listing-rooms"] span:first-child',
@@ -101,7 +84,6 @@
     );
     const bedrooms = text(bedNode);
 
-    // Bathrooms
     const bathNode = first(card,
       '[data-automation-id="listing-card-bathroom"]',
       '[data-automation-id="listing-rooms"] span:nth-child(2)',
@@ -110,7 +92,6 @@
     );
     const bathrooms = text(bathNode);
 
-    // MRT info
     const mrtNode = first(card,
       '[data-automation-id="listing-mrt"]',
       '.listing-mrt',
@@ -119,25 +100,13 @@
     );
     const mrtInfo = text(mrtNode);
 
-    // Listing ID (from data attr if available)
     const listingId = card.dataset.listingId || card.dataset.id || attr(card, 'id') || null;
 
-    return {
-      listingId,
-      title,
-      url,
-      price,
-      pricePerSqft,
-      size,
-      address,
-      bedrooms,
-      bathrooms,
-      mrtInfo,
-    };
+    return { listingId, title, url, price, pricePerSqft, size, address, bedrooms, bathrooms, mrtInfo };
   }
 
-  // ── Find all listing cards ───────────────────────────────────────────────
-  function findCards() {
+  // ── Find all listing cards in a document (current page or fetched HTML) ──
+  function findCards(doc) {
     const selectors = [
       '[data-listing-id]',
       '.listing-card',
@@ -147,13 +116,61 @@
       '.listing-item',
     ];
     for (const sel of selectors) {
-      const cards = [...document.querySelectorAll(sel)];
+      const cards = [...doc.querySelectorAll(sel)];
       if (cards.length > 0) return cards;
     }
     return [];
   }
 
-  // ── Handle "Load More" / pagination ─────────────────────────────────────
+  // ── Detect total page count from pagination controls ─────────────────────
+  function detectTotalPages(doc) {
+    // Look for pagination links like ?page=N or page number buttons
+    const paginationSelectors = [
+      '[data-automation-id="pagination"]',
+      '.pagination',
+      '[class*="pagination"]',
+      'nav[aria-label*="pagination" i]',
+    ];
+
+    for (const sel of paginationSelectors) {
+      const nav = doc.querySelector(sel);
+      if (!nav) continue;
+
+      // Grab all links/buttons with a page number
+      const items = [...nav.querySelectorAll('a, button, span')];
+      let max = 1;
+      for (const item of items) {
+        const n = parseInt(item.textContent.trim(), 10);
+        if (!isNaN(n) && n > max) max = n;
+        // Also check href for ?page=N
+        const href = item.getAttribute('href') || '';
+        const m = href.match(/[?&]page=(\d+)/i);
+        if (m) {
+          const pg = parseInt(m[1], 10);
+          if (pg > max) max = pg;
+        }
+      }
+      if (max > 1) return max;
+    }
+    return 1;
+  }
+
+  // ── Build a page URL from the current URL + page number ──────────────────
+  function pageUrl(pageNum) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('page', pageNum);
+    return url.toString();
+  }
+
+  // ── Fetch a page and return its parsed document ───────────────────────────
+  async function fetchPage(url) {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
+    const html = await res.text();
+    return new DOMParser().parseFromString(html, 'text/html');
+  }
+
+  // ── Fallback: click "Load More" button if no pagination found ────────────
   async function clickLoadMore() {
     const loadMoreSelectors = [
       'button[data-automation-id="load-more"]',
@@ -167,32 +184,58 @@
       let btn = null;
       for (const sel of loadMoreSelectors) {
         btn = document.querySelector(sel);
-        if (btn && btn.offsetParent !== null) break; // visible
+        if (btn && btn.offsetParent !== null) break;
         btn = null;
       }
       if (!btn) break;
-      const prevCount = findCards().length;
+      const prevCount = findCards(document).length;
       btn.click();
-      // Wait for new cards to render
       await new Promise(r => setTimeout(r, 2000));
-      const newCount = findCards().length;
+      const newCount = findCards(document).length;
       clicked++;
-      if (newCount <= prevCount || clicked > 20) break; // safety cap
+      if (newCount <= prevCount || clicked > 20) break;
     }
   }
 
   // ── Main scrape function ─────────────────────────────────────────────────
   async function scrape() {
-    await clickLoadMore();
-    const cards = findCards();
-    const listings = cards
-      .map(parseCard)
-      .filter(l => l.title || l.price || l.url); // skip empty
+    window.__pgScrapeStatus = 'running';
+
+    // Scrape current page first
+    const totalPages = detectTotalPages(document);
+    const page1Cards = findCards(document);
+    const allListings = page1Cards.map(parseCard);
+
+    if (totalPages > 1) {
+      // Fetch remaining pages in sequence
+      for (let pg = 2; pg <= totalPages; pg++) {
+        try {
+          const doc = await fetchPage(pageUrl(pg));
+          const cards = findCards(doc);
+          if (cards.length === 0) break; // no more listings
+          cards.map(parseCard).forEach(l => allListings.push(l));
+        } catch (e) {
+          console.warn('[PG Scraper] Failed to fetch page', pg, e);
+          break;
+        }
+      }
+    } else {
+      // No pagination detected — try load-more button
+      await clickLoadMore();
+      // Re-scrape in case new cards appeared
+      const updatedCards = findCards(document);
+      if (updatedCards.length > allListings.length) {
+        allListings.length = 0;
+        updatedCards.map(parseCard).forEach(l => allListings.push(l));
+      }
+    }
+
+    const listings = allListings.filter(l => l.title || l.price || l.url);
     window.__pgScrapedListings = listings;
+    window.__pgScrapeStatus = 'done';
     return listings;
   }
 
-  // Run on page load and on explicit trigger from popup
   scrape();
   window.addEventListener('pg:scrape', () => scrape());
 })();

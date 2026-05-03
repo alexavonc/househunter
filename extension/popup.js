@@ -32,47 +32,50 @@ async function init() {
   }
 }
 
+// Poll until the content script signals it's done (or timeout)
+async function waitForScrape(tabId, timeoutMs = 30000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({ status: window.__pgScrapeStatus, listings: window.__pgScrapedListings }),
+    });
+    const { status, listings } = results?.[0]?.result ?? {};
+    if (status === 'done' && Array.isArray(listings)) return listings;
+    await new Promise(r => setTimeout(r, 600));
+  }
+  // Timeout — return whatever we have
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => window.__pgScrapedListings,
+  });
+  return results?.[0]?.result ?? [];
+}
+
 exportBtn.addEventListener('click', async () => {
   const tab = await getCurrentTab();
 
   exportBtn.disabled = true;
-  setStatus('<span class="spinner"></span>Scraping listings…');
+  setStatus('<span class="spinner"></span>Scraping all pages…');
 
   try {
-    // Inject the content script imperatively in case it hasn't run yet
+    // Reset state and re-trigger a fresh scrape
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        window.__pgScrapedListings = null;
+        window.__pgScrapeStatus = null;
+      },
+    });
+
+    // Inject content script (idempotent — ignore error if already injected)
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ['content.js'],
-    }).catch(() => {
-      // Already injected — ignore the error
-    });
+    }).catch(() => {});
 
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => window.__pgScrapedListings,
-    });
-
-    let listings = results?.[0]?.result;
-
-    if (!listings || listings.length === 0) {
-      // Try triggering a fresh scrape
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          window.__pgScrapedListings = null;
-          window.dispatchEvent(new Event('pg:scrape'));
-        },
-      });
-
-      // Wait briefly then retry
-      await new Promise(r => setTimeout(r, 1500));
-
-      const retryResults = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => window.__pgScrapedListings,
-      });
-      listings = retryResults?.[0]?.result;
-    }
+    // Trigger scrape and wait for completion
+    const listings = await waitForScrape(tab.id, 60000);
 
     if (!listings || listings.length === 0) {
       setStatus('No listings found. Make sure the shortlist page is fully loaded.', 'error');
