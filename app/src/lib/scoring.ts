@@ -2,7 +2,7 @@ import { MRT_TARGETS, SCORE_1_M, SCORE_5_M } from '../config/mrtTargets';
 
 // ── Geo helpers ──────────────────────────────────────────────────────────────
 
-function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number): number {
+export function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371000;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLng = ((lng2 - lng1) * Math.PI) / 180;
@@ -46,11 +46,21 @@ export function walkingMinutes(distM: number): number {
 }
 
 // Estimated bus: 3 min walk to stop + 5 min wait + travel at ~20 km/h with 1.5× road factor
-// Minimum 8 min. For very short distances, walking is faster so we show walk instead.
+// Minimum 8 min.
 export function busMinutes(distM: number): number {
   if (!isFinite(distM)) return Infinity;
   const travel = (distM * 1.5) / (20000 / 60); // metres → minutes at 20 km/h
   return Math.max(8, Math.round(3 + 5 + travel));
+}
+
+export interface TravelTimes {
+  walkMins: number;
+  busMins: number;
+}
+
+export function travelTimes(fromLat: number, fromLng: number, toLat: number, toLng: number): TravelTimes {
+  const distM = haversineMetres(fromLat, fromLng, toLat, toLng);
+  return { walkMins: walkingMinutes(distM), busMins: busMinutes(distM) };
 }
 
 function clamp(v: number, lo: number, hi: number) {

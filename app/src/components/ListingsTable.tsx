@@ -63,9 +63,10 @@ type SortKey = keyof ScoredListing | null;
 interface Props {
   listings: ScoredListing[];
   onStatusChange: (index: number, status: string) => Promise<void>;
+  commuteLabels?: string[];
 }
 
-export default function ListingsTable({ listings, onStatusChange }: Props) {
+export default function ListingsTable({ listings, onStatusChange, commuteLabels = [] }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>('compositeScore');
   const [sortAsc, setSortAsc] = useState(false);
   const [updatingIdx, setUpdatingIdx] = useState<number | null>(null);
@@ -152,6 +153,14 @@ export default function ListingsTable({ listings, onStatusChange }: Props) {
             <SortTh label="Nearest MRT" k="_mrtName" title="Nearest target MRT station" />
             <SortTh label="Walk" k="_walkMins" title="Walking time to nearest MRT" />
             <SortTh label="Bus (est.)" k="_busMins" title="Estimated bus time to nearest MRT (includes walk to stop + wait)" />
+            {commuteLabels.map(label => (
+              <th key={label} style={{
+                padding: '10px 8px', background: '#fafafa', borderBottom: '2px solid var(--border)',
+                fontWeight: 600, fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap',
+              }}>
+                {label}
+              </th>
+            ))}
             <SortTh label="MRT Score" k="mrtScore" title="1–5: proximity to target MRT stations" />
             <SortTh label="Afford." k="affordabilityScore" title="1–5: affordability relative to your budget" />
             <SortTh label="Size Score" k="sizeScore" title="1–5: size relative to other listings" />
@@ -258,6 +267,18 @@ export default function ListingsTable({ listings, onStatusChange }: Props) {
                 <td style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
                   {mins(listing._busMins)}
                 </td>
+
+                {/* Commute destination columns */}
+                {listing._commutes.map(c => (
+                  <td key={c.label} style={{ padding: '8px 10px', whiteSpace: 'nowrap', fontSize: 12 }}>
+                    {isFinite(c.walkMins) ? (
+                      <div>
+                        <div>🚶 {c.walkMins} min</div>
+                        <div style={{ color: 'var(--text-muted)' }}>🚌 {c.busMins} min</div>
+                      </div>
+                    ) : '—'}
+                  </td>
+                ))}
 
                 {/* MRT Score */}
                 <ScoreCell score={listing.mrtScore} />

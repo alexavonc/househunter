@@ -26,18 +26,57 @@
     return node ? node.getAttribute(a) : null;
   }
 
+  // ── Text-content leaf search — finds a leaf element whose text matches re ──
+  function findByText(card, re) {
+    for (const el of card.querySelectorAll('*')) {
+      if (el.children.length === 0 && re.test(el.textContent.trim())) return el;
+    }
+    return null;
+  }
+
   // ── Parse a single card element ──────────────────────────────────────────
   function parseCard(card) {
-    const titleNode = first(card,
-      '.listing-title a',
-      'h3.listing-name a',
+    // Title: try known selectors, then any heading, then first property-page link
+    let titleNode = first(card,
+      '[data-automation-id="listing-card-title"]',
+      '[data-automation-id="listing-card-title"] a',
+      '[data-automation-id="listing-name"]',
       '[data-automation-id="listing-name"] a',
-      'h3 a',
-      '.listing-title',
+      '.listing-title a', '.listing-card-title a',
+      'h3.listing-name a', 'h4.listing-name a',
+      'h2 a', 'h3 a', 'h4 a',
+      'h2', 'h3', 'h4',
+      '.listing-title', '.listing-card-title',
+      '[class*="listingName"]', '[class*="ListingName"]',
+      '[class*="title"]:not(head):not(button)',
     );
+    // Last resort: first anchor that links to a property page and has real text
+    if (!titleNode) {
+      for (const a of card.querySelectorAll('a[href]')) {
+        const t = a.textContent.trim();
+        const href = a.getAttribute('href') || '';
+        if (t.length > 2 && !a.querySelector('img') &&
+            (href.includes('/property-for-') || href.includes('/listing/'))) {
+          titleNode = a;
+          break;
+        }
+      }
+    }
+    // Broadest fallback: first anchor with non-trivial text that isn't a UI label
+    if (!titleNode) {
+      for (const a of card.querySelectorAll('a[href]')) {
+        const t = a.textContent.trim();
+        if (t.length > 3 && !a.querySelector('img') && !/^(view|see|more|details|enquire|contact|shortlist|save)/i.test(t)) {
+          titleNode = a;
+          break;
+        }
+      }
+    }
     const title = text(titleNode);
 
-    let url = attr(titleNode, 'href') || attr(first(card, 'a[href*="/property-for-"]'), 'href');
+    let url = attr(titleNode, 'href') ||
+              attr(first(card, 'a[href*="/property-for-"]'), 'href') ||
+              attr(first(card, 'a[href*="/listing/"]'), 'href');
     if (url && !url.startsWith('http')) url = 'https://www.propertyguru.com.sg' + url;
 
     const priceNode = first(card,
@@ -47,17 +86,23 @@
     );
     const price = text(priceNode);
 
-    const psfNode = first(card,
+    // Price-per-sqft: try selectors, then text containing "psf"
+    let psfNode = first(card,
       '[data-automation-id="listing-card-psf"]',
       '.price-psf', '[class*="psf"]',
     );
+    if (!psfNode) psfNode = findByText(card, /psf/i);
     const pricePerSqft = text(psfNode);
 
-    const sizeNode = first(card,
+    // Size: try selectors, then text containing "sqft" or "sq ft"
+    let sizeNode = first(card,
       '[data-automation-id="listing-floor-area"]',
       '[data-automation-id="listing-card-floor-area"]',
+      '[data-automation-id="floorArea"]',
       '.listing-floor-area', '[class*="floor-area"]', '[class*="floorArea"]',
+      '[class*="sqft"]', '[class*="area"]',
     );
+    if (!sizeNode) sizeNode = findByText(card, /\d[\d,]*\s*sqft/i);
     const size = text(sizeNode);
 
     const addressNode = first(card,

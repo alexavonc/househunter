@@ -9,12 +9,21 @@ import {
   compositeScore,
   parsePrice,
   parseSqft,
+  travelTimes,
+  type TravelTimes,
 } from './lib/scoring';
 import { downloadCsv } from './lib/csv';
+import { COMMUTE_DESTINATIONS, type CommuteDestination } from './config/commuteDestinations';
 import UploadPanel from './components/UploadPanel';
 import FilterBar from './components/FilterBar';
 import ListingsTable from './components/ListingsTable';
 import WeightsPanel from './components/WeightsPanel';
+
+export interface CommuteTimes {
+  label: string;
+  walkMins: number;
+  busMins: number;
+}
 
 export interface ScoredListing extends Listing {
   _index: number;
@@ -24,6 +33,7 @@ export interface ScoredListing extends Listing {
   _mrtName: string;
   _walkMins: number;
   _busMins: number;
+  _commutes: CommuteTimes[];
   mrtScore: number;
   affordabilityScore: number;
   sizeScore: number;
@@ -48,6 +58,9 @@ const DEFAULT_WEIGHTS: Weights = { mrt: 1, affordability: 1, size: 1 };
 const DEFAULT_FILTERS: Filters = { minPrice: '', maxPrice: '', minSqft: '', district: '', status: '' };
 const DEFAULT_BUDGET = 2_000_000;
 
+// Resolved destination coords (null = geocoding failed)
+type ResolvedDest = CommuteDestination & { resolvedLat: number; resolvedLng: number };
+
 export default function App() {
   const [storeData, setStoreData] = useState<StoreData | null>(null);
   const [scoredListings, setScoredListings] = useState<ScoredListing[]>([]);
@@ -60,8 +73,24 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Geocode cache keyed by address → closest MRT result
   const [geoCache, setGeoCache] = useState<Map<string, ReturnType<typeof closestMrt>>>(new Map());
+  const [resolvedDests, setResolvedDests] = useState<ResolvedDest[]>([]);
+
+  // Geocode any commute destinations that don't have lat/lng hardcoded
+  useEffect(() => {
+    (async () => {
+      const resolved: ResolvedDest[] = [];
+      for (const dest of COMMUTE_DESTINATIONS) {
+        if (dest.lat != null && dest.lng != null) {
+          resolved.push({ ...dest, resolvedLat: dest.lat, resolvedLng: dest.lng });
+        } else if (dest.address) {
+          const coords = await geocodeAddress(dest.address);
+          if (coords) resolved.push({ ...dest, resolvedLat: coords.lat, resolvedLng: coords.lng });
+        }
+      }
+      setResolvedDests(resolved);
+    })();
+  }, []);
 
   const loadData = useCallback(async () => {
     try {
@@ -119,12 +148,46 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeData]);
 
-  // Rebuild scores when weights/budget change
+  // Rebuild scores when weights/budget/destinations change
   useEffect(() => {
     if (!storeData) return;
     rebuildScores(storeData.listings, geoCache);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weights, budgetCeiling, geoCache]);
+  }, [weights, budgetCeiling, geoCache, resolvedDests]);
+
+  // Per-listing geocode cache for commute destination travel times
+  const [listingCoords, setListingCoords] = useState<Map<string, { lat: number; lng: number } | null>>(new Map());
+
+  // Geocode listing addresses for commute time calculation
+  useEffect(() => {
+    if (!storeData || resolvedDests.length === 0) return;
+    const listings = storeData.listings;
+    const newCache = new Map(listingCoords);
+    let dirty = false;
+    (async () => {
+      for (const l of listings) {
+        const addr = l.address || l.title || '';
+        if (addr && !newCache.has(addr)) {
+          const coords = await geocodeAddress(addr);
+          newCache.set(addr, coords);
+          dirty = true;
+        }
+      }
+      if (dirty) setListingCoords(new Map(newCache));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeData, resolvedDests]);
+
+  function computeCommutes(listing: Listing): CommuteTimes[] {
+    if (resolvedDests.length === 0) return [];
+    const addr = listing.address || listing.title || '';
+    const coords = listingCoords.get(addr);
+    if (!coords) return resolvedDests.map(d => ({ label: d.label, walkMins: Infinity, busMins: Infinity }));
+    return resolvedDests.map(d => ({
+      label: d.label,
+      ...travelTimes(coords.lat, coords.lng, d.resolvedLat, d.resolvedLng),
+    }));
+  }
 
   function rebuildScores(listings: Listing[], distMap: Map<string, ReturnType<typeof closestMrt>>) {
     const prices = listings.map(l => parsePrice(l.price));
@@ -147,6 +210,7 @@ export default function App() {
         _mrtName: geo.name,
         _walkMins: geo.walkMins,
         _busMins: geo.busMins,
+        _commutes: computeCommutes(l),
         mrtScore: mrt,
         affordabilityScore: afford,
         sizeScore: sz,
@@ -190,25 +254,38 @@ export default function App() {
   }
 
   function handleExportCsv() {
-    const rows = filtered.map(l => ({
-      Title: l.title ?? '',
-      URL: l.url ?? '',
-      Price: l.price ?? '',
-      'Price/sqft': l.pricePerSqft ?? '',
-      'Size (sqft)': l.size ?? '',
-      Address: l.address ?? '',
-      Bedrooms: l.bedrooms ?? '',
-      Bathrooms: l.bathrooms ?? '',
-      'MRT Info': l.mrtInfo ?? '',
-      'Nearest MRT': l._mrtName,
-      'Walk to MRT (min)': isFinite(l._walkMins) ? l._walkMins : '',
-      'Bus to MRT (min, est.)': isFinite(l._busMins) ? l._busMins : '',
-      'MRT Score': l.mrtScore,
-      'Affordability Score': l.affordabilityScore,
-      'Size Score': l.sizeScore,
-      'Composite Score': l.compositeScore,
-      'Enquiry Status': l.enquiryStatus ?? '',
-    }));
+    const commuteHeaders = resolvedDests.flatMap(d => [
+      `${d.label} walk (min)`,
+      `${d.label} bus est. (min)`,
+    ]);
+    const rows = filtered.map(l => {
+      const commuteVals: Record<string, number | string> = {};
+      l._commutes.forEach(c => {
+        commuteVals[`${c.label} walk (min)`] = isFinite(c.walkMins) ? c.walkMins : '';
+        commuteVals[`${c.label} bus est. (min)`] = isFinite(c.busMins) ? c.busMins : '';
+      });
+      void commuteHeaders;
+      return {
+        Title: l.title ?? '',
+        URL: l.url ?? '',
+        Price: l.price ?? '',
+        'Price/sqft': l.pricePerSqft ?? '',
+        'Size (sqft)': l.size ?? '',
+        Address: l.address ?? '',
+        Bedrooms: l.bedrooms ?? '',
+        Bathrooms: l.bathrooms ?? '',
+        'MRT Info': l.mrtInfo ?? '',
+        'Nearest MRT': l._mrtName,
+        'Walk to MRT (min)': isFinite(l._walkMins) ? l._walkMins : '',
+        'Bus to MRT est. (min)': isFinite(l._busMins) ? l._busMins : '',
+        ...commuteVals,
+        'MRT Score': l.mrtScore,
+        'Affordability Score': l.affordabilityScore,
+        'Size Score': l.sizeScore,
+        'Composite Score': l.compositeScore,
+        'Enquiry Status': l.enquiryStatus ?? '',
+      };
+    });
     downloadCsv(rows, `househunter-${new Date().toISOString().slice(0, 10)}.csv`);
   }
 
@@ -244,7 +321,7 @@ export default function App() {
         </button>
       </header>
 
-      <main style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 16px' }}>
+      <main style={{ maxWidth: 1600, margin: '0 auto', padding: '24px 16px' }}>
         {isAdmin && (
           <UploadPanel onUpload={handleUpload} onClose={() => setIsAdmin(false)} />
         )}
@@ -277,6 +354,7 @@ export default function App() {
             <ListingsTable
               listings={filtered}
               onStatusChange={handleStatusChange}
+              commuteLabels={resolvedDests.map(d => d.label)}
             />
           </>
         )}
