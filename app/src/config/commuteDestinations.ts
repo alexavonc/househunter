@@ -9,6 +9,7 @@ export interface CommuteDestination {
 }
 
 export const COMMUTE_DESTINATIONS: CommuteDestination[] = [
-  { label: 'Newton MRT',       gmapsQuery: 'Newton MRT Station, Singapore' },
+  { label: 'One-North MRT',      gmapsQuery: 'one-north MRT Station, Singapore' },
   { label: '817 Tampines St 81', gmapsQuery: '817 Tampines Street 81, Singapore' },
+  { label: 'GovTech PDD',        gmapsQuery: 'Punggol Digital District, Singapore' },
 ];
