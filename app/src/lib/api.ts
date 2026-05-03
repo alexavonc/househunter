@@ -1,5 +1,10 @@
 const BASE = '/api';
 
+export interface TransitTimes {
+  commutes: { label: string; transitMins: number | null }[];
+  busMinsToMrt: number | null;
+}
+
 export interface Listing {
   listingId: string | null;
   title: string | null;
@@ -13,6 +18,7 @@ export interface Listing {
   bathrooms: string | null;
   mrtInfo: string | null;
   enquiryStatus?: string;
+  _transitTimes?: TransitTimes | null;
 }
 
 export interface StoreData {

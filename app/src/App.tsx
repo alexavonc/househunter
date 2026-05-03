@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { fetchListings, uploadFile, updateStatus, type Listing, type StoreData } from './lib/api';
 import {
   mrtScoreFromWalkMins,
@@ -28,8 +28,8 @@ export interface ScoredListing extends Listing {
   _mrtDistM: number;
   _mrtName: string;
   _walkMins: number;
-  _busMinsToMrt: number | null;   // Google Maps transit to nearest MRT
-  _commutes: CommuteTimes[];       // Google Maps transit to each commute destination
+  _busMinsToMrt: number | null;
+  _commutes: CommuteTimes[];
   mrtScore: number;
   affordabilityScore: number;
   sizeScore: number;
@@ -54,33 +54,6 @@ const DEFAULT_WEIGHTS: Weights = { mrt: 1, affordability: 1, size: 1 };
 const DEFAULT_FILTERS: Filters = { minPrice: '', maxPrice: '', minSqft: '', district: '', status: '' };
 const DEFAULT_BUDGET = 2_000_000;
 
-// ── Google Maps proxy helper ─────────────────────────────────────────────────
-
-interface DistResult { durationMins: number | null; distanceM: number | null; }
-
-async function fetchDistances(
-  origin: string,
-  destinations: string[],
-  mode: 'transit' | 'walking' = 'transit',
-): Promise<DistResult[]> {
-  if (!origin || destinations.length === 0) return destinations.map(() => ({ durationMins: null, distanceM: null }));
-  try {
-    const params = new URLSearchParams({
-      origin: origin.includes('Singapore') ? origin : `${origin}, Singapore`,
-      destinations: destinations.join('|'),
-      mode,
-    });
-    const res = await fetch(`/api/distance?${params}`);
-    if (!res.ok) return destinations.map(() => ({ durationMins: null, distanceM: null }));
-    const data = await res.json() as { results: DistResult[] };
-    return data.results ?? destinations.map(() => ({ durationMins: null, distanceM: null }));
-  } catch {
-    return destinations.map(() => ({ durationMins: null, distanceM: null }));
-  }
-}
-
-// ── App ──────────────────────────────────────────────────────────────────────
-
 export default function App() {
   const [storeData, setStoreData] = useState<StoreData | null>(null);
   const [scoredListings, setScoredListings] = useState<ScoredListing[]>([]);
@@ -90,10 +63,6 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [transitProgress, setTransitProgress] = useState<string | null>(null);
-
-  // Transit time cache: listing address → { commutes, busMinsToMrt }
-  const transitCache = useRef<Map<string, { commutes: CommuteTimes[]; busMinsToMrt: number | null }>>(new Map());
 
   const loadData = useCallback(async () => {
     try {
@@ -110,57 +79,11 @@ export default function App() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Build basic scores whenever data/weights/budget change
   useEffect(() => {
     if (!storeData) return;
     setScoredListings(buildScores(storeData.listings));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storeData, weights, budgetCeiling]);
-
-  // Fetch Google Maps transit times in the background after data loads
-  useEffect(() => {
-    if (!storeData || storeData.listings.length === 0) return;
-    let cancelled = false;
-
-    (async () => {
-      const listings = storeData.listings;
-      for (let i = 0; i < listings.length; i++) {
-        if (cancelled) break;
-        const l = listings[i];
-        const addr = l.address || l.title || '';
-        if (!addr || transitCache.current.has(addr)) continue;
-
-        setTransitProgress(`Fetching transit times ${i + 1}/${listings.length}…`);
-
-        // Build destination list: commute destinations + nearest MRT (if known)
-        const parsed = parseMrtInfo(l.mrtInfo);
-        const mrtDest = parsed?.stationName ? `${parsed.stationName}, Singapore` : null;
-        const commuteDests = COMMUTE_DESTINATIONS.map(d => d.gmapsQuery);
-        const allDests = [...commuteDests, ...(mrtDest ? [mrtDest] : [])];
-
-        const results = await fetchDistances(addr, allDests, 'transit');
-
-        const commutes: CommuteTimes[] = COMMUTE_DESTINATIONS.map((d, j) => ({
-          label: d.label,
-          transitMins: results[j]?.durationMins ?? null,
-        }));
-        const busMinsToMrt = mrtDest ? (results[commuteDests.length]?.durationMins ?? null) : null;
-
-        transitCache.current.set(addr, { commutes, busMinsToMrt });
-
-        // Small delay to avoid hammering the API
-        await new Promise(r => setTimeout(r, 150));
-      }
-
-      if (!cancelled) {
-        setTransitProgress(null);
-        setScoredListings(buildScores(listings));
-      }
-    })();
-
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeData]);
 
   function buildScores(listings: Listing[]): ScoredListing[] {
     const prices = listings.map(l => parsePrice(l.price));
@@ -173,8 +96,10 @@ export default function App() {
       const mrtName = parsed?.stationName ?? '—';
       const walkMins = parsed?.walkMins ?? Infinity;
 
-      const addr = l.address || l.title || '';
-      const cached = transitCache.current.get(addr);
+      const transit = l._transitTimes ?? null;
+      const busMinsToMrt = transit?.busMinsToMrt ?? null;
+      const commutes: CommuteTimes[] = transit?.commutes
+        ?? COMMUTE_DESTINATIONS.map(d => ({ label: d.label, transitMins: null }));
 
       const mrt = mrtScoreFromWalkMins(walkMins);
       const afford = affordabilityScore(prices[i], budgetCeiling);
@@ -189,8 +114,8 @@ export default function App() {
         _mrtDistM: mrtDistM,
         _mrtName: mrtName,
         _walkMins: walkMins,
-        _busMinsToMrt: cached?.busMinsToMrt ?? null,
-        _commutes: cached?.commutes ?? COMMUTE_DESTINATIONS.map(d => ({ label: d.label, transitMins: null })),
+        _busMinsToMrt: busMinsToMrt,
+        _commutes: commutes,
         mrtScore: mrt,
         affordabilityScore: afford,
         sizeScore: sz,
@@ -262,17 +187,13 @@ export default function App() {
   }
 
   async function handleUpload(file: File, password: string) {
-    transitCache.current.clear();
     await uploadFile(file, password);
     await loadData();
   }
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
-      <header style={{
-        background: 'var(--red)', color: '#fff', padding: '14px 24px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      }}>
+      <header className="app-header">
         <div>
           <h1 style={{ color: '#fff', fontSize: '1.2rem' }}>Househunter</h1>
           <div style={{ fontSize: '11px', opacity: 0.8 }}>
@@ -298,9 +219,9 @@ export default function App() {
             <WeightsPanel weights={weights} onWeightsChange={setWeights}
               budgetCeiling={budgetCeiling} onBudgetChange={setBudgetCeiling} />
             <FilterBar filters={filters} onFiltersChange={setFilters} />
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
               <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-                {transitProgress ?? `${filtered.length} of ${scoredListings.length} listings`}
+                {`${filtered.length} of ${scoredListings.length} listings`}
               </div>
               <button className="btn-secondary" onClick={handleExportCsv} style={{ fontSize: 12 }}>
                 Export CSV

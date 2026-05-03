@@ -51,3 +51,26 @@ a:hover { text-decoration: underline; }
 .btn-primary:hover:not(:disabled) { background: #aa0000; }
 .btn-secondary { background: #f0f0f0; color: var(--text); }
 .btn-secondary:hover:not(:disabled) { background: #e0e0e0; }
+
+.app-header {
+  background: var(--red);
+  color: #fff;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ── Mobile ─────────────────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  :root { font-size: 13px; }
+
+  main { padding: 12px 10px !important; }
+
+  .app-header { padding: 12px 16px; }
+
+  /* Panels: full width, smaller padding */
+  .app-header h1 { font-size: 1rem; }
+}

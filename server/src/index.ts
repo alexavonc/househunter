@@ -8,20 +8,29 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const UPLOAD_PASSWORD = process.env.UPLOAD_PASSWORD || 'changeme';
 
-// Data directory — Railway ephemeral FS, or local dev
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const STORE_PATH = path.join(DATA_DIR, 'store.json');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-// ── Store helpers ────────────────────────────────────────────────────────────
+// ── Commute destinations (keep in sync with app/src/config/commuteDestinations.ts) ──
+const COMMUTE_DESTINATIONS = [
+  { label: 'Newton MRT',         gmapsQuery: 'Newton MRT Station, Singapore' },
+  { label: '817 Tampines St 81', gmapsQuery: '817 Tampines Street 81, Singapore' },
+];
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface TransitTimes {
+  commutes: { label: string; transitMins: number | null }[];
+  busMinsToMrt: number | null;
+}
 
 interface Listing {
   listingId: string | null;
   title: string | null;
   url: string | null;
+  imageUrl?: string | null;
   price: string | null;
   pricePerSqft: string | null;
   size: string | null;
@@ -30,6 +39,7 @@ interface Listing {
   bathrooms: string | null;
   mrtInfo: string | null;
   enquiryStatus?: string;
+  _transitTimes?: TransitTimes | null;
   [key: string]: unknown;
 }
 
@@ -39,6 +49,8 @@ interface Store {
   count: number;
   listings: Listing[];
 }
+
+// ── Store helpers ────────────────────────────────────────────────────────────
 
 function readStore(): Store | null {
   try {
@@ -53,191 +65,182 @@ function writeStore(store: Store): void {
   fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2));
 }
 
+function listingKey(l: Listing): string {
+  return l.url || l.listingId || l.title || '';
+}
+
+// ── MRT station name parser (mirrors app/src/lib/scoring.ts parseMrtInfo) ───
+
+function parseMrtStation(mrtInfo: string | null): string | null {
+  if (!mrtInfo) return null;
+  const m = mrtInfo.match(/from\s+(?:[A-Z0-9/]+\s+)?(.+)/i);
+  return m ? m[1].trim() : null;
+}
+
+// ── Google Maps Distance Matrix call ────────────────────────────────────────
+
+async function fetchTransitTimes(listing: Listing): Promise<TransitTimes | null> {
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return null;
+
+  const origin = listing.address || listing.title || '';
+  if (!origin) return null;
+
+  const mrtStation = parseMrtStation(listing.mrtInfo);
+  const destinations = [
+    ...COMMUTE_DESTINATIONS.map(d => d.gmapsQuery),
+    ...(mrtStation ? [`${mrtStation}, Singapore`] : []),
+  ];
+
+  try {
+    const params = new URLSearchParams({
+      origins: origin.includes('Singapore') ? origin : `${origin}, Singapore`,
+      destinations: destinations.join('|'),
+      mode: 'transit',
+      region: 'sg',
+      key: apiKey,
+    });
+    const res = await fetch(
+      `https://maps.googleapis.com/maps/api/distancematrix/json?${params}`,
+    );
+    const data = await res.json() as {
+      status: string;
+      rows: { elements: { status: string; duration: { value: number } }[] }[];
+    };
+
+    if (data.status !== 'OK') return null;
+    const elements = data.rows[0]?.elements ?? [];
+
+    const commutes = COMMUTE_DESTINATIONS.map((d, i) => ({
+      label: d.label,
+      transitMins: elements[i]?.status === 'OK'
+        ? Math.round(elements[i].duration.value / 60)
+        : null,
+    }));
+    const busMinsToMrt = mrtStation && elements[COMMUTE_DESTINATIONS.length]?.status === 'OK'
+      ? Math.round(elements[COMMUTE_DESTINATIONS.length].duration.value / 60)
+      : null;
+
+    return { commutes, busMinsToMrt };
+  } catch {
+    return null;
+  }
+}
+
 // ── Middleware ───────────────────────────────────────────────────────────────
 
 app.use(cors());
 app.use(express.json());
 
-// Multer — memory storage, 10 MB limit
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype === 'application/json' || file.originalname.endsWith('.json')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only JSON files are accepted'));
-    }
+    if (file.mimetype === 'application/json' || file.originalname.endsWith('.json')) cb(null, true);
+    else cb(new Error('Only JSON files are accepted'));
   },
 });
 
-// Auth middleware for write endpoints
 function requirePassword(req: express.Request, res: express.Response, next: express.NextFunction): void {
   const provided = req.headers['x-upload-password'] || req.body?.password;
-  if (provided !== UPLOAD_PASSWORD) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
+  if (provided !== UPLOAD_PASSWORD) { res.status(401).json({ error: 'Unauthorized' }); return; }
   next();
 }
 
-// ── API routes ───────────────────────────────────────────────────────────────
+// ── API ──────────────────────────────────────────────────────────────────────
 
-// GET /api/listings — return current store
 app.get('/api/listings', (_req, res) => {
   const store = readStore();
-  if (!store) {
-    res.json({ listings: [], uploadedAt: null });
-    return;
-  }
-  res.json(store);
+  res.json(store ?? { listings: [], uploadedAt: null, count: 0 });
 });
 
-// POST /api/upload — upload new JSON export (password protected)
-app.post('/api/upload', requirePassword, upload.single('file'), (req, res) => {
-  if (!req.file) {
-    res.status(400).json({ error: 'No file provided' });
-    return;
-  }
-  let parsed: Store;
+// POST /api/upload
+// - Deduplicates by URL (first occurrence wins within the new file)
+// - Merges enquiry status and transit times from existing store by URL
+// - Calls Google Maps for any listing that doesn't yet have transit times
+app.post('/api/upload', requirePassword, upload.single('file'), async (req, res) => {
+  if (!req.file) { res.status(400).json({ error: 'No file provided' }); return; }
+
+  let parsed: { exportedAt?: string; listings: Listing[] };
   try {
-    parsed = JSON.parse(req.file.buffer.toString('utf8')) as Store;
+    parsed = JSON.parse(req.file.buffer.toString('utf8'));
   } catch {
-    res.status(400).json({ error: 'Invalid JSON' });
-    return;
+    res.status(400).json({ error: 'Invalid JSON' }); return;
   }
-
   if (!Array.isArray(parsed.listings)) {
-    res.status(400).json({ error: 'JSON must have a "listings" array' });
-    return;
+    res.status(400).json({ error: 'JSON must have a "listings" array' }); return;
   }
 
-  // Preserve existing enquiryStatus values keyed by listing URL or id
+  // Build lookup maps from existing store
   const existing = readStore();
-  const statusMap = new Map<string, string>();
+  const existingByKey = new Map<string, Listing>();
   if (existing) {
     for (const l of existing.listings) {
-      const key = l.url || l.listingId || l.title || '';
-      if (key && l.enquiryStatus) statusMap.set(key, l.enquiryStatus);
+      const k = listingKey(l);
+      if (k) existingByKey.set(k, l);
     }
   }
 
-  const listings: Listing[] = parsed.listings.map((l: Listing) => {
-    const key = l.url || l.listingId || l.title || '';
-    return {
+  // Deduplicate incoming listings by URL (first occurrence wins)
+  const seenKeys = new Set<string>();
+  const deduped: Listing[] = [];
+  for (const l of parsed.listings) {
+    const k = listingKey(l);
+    if (k && seenKeys.has(k)) continue;
+    if (k) seenKeys.add(k);
+    const prev = existingByKey.get(k);
+    deduped.push({
       ...l,
-      enquiryStatus: statusMap.get(key) || l.enquiryStatus || 'Not Contacted',
-    };
-  });
+      enquiryStatus: prev?.enquiryStatus || l.enquiryStatus || 'Not Contacted',
+      _transitTimes: prev?._transitTimes ?? null, // carry over cached transit times
+    });
+  }
+
+  // Fetch Google Maps transit times for listings that don't have them yet
+  const hasApiKey = !!process.env.GOOGLE_MAPS_API_KEY;
+  if (hasApiKey) {
+    for (let i = 0; i < deduped.length; i++) {
+      if (deduped[i]._transitTimes) continue; // already cached
+      deduped[i]._transitTimes = await fetchTransitTimes(deduped[i]);
+      if (i < deduped.length - 1) await new Promise(r => setTimeout(r, 150));
+    }
+  }
 
   const store: Store = {
-    exportedAt: parsed.exportedAt || null,
+    exportedAt: parsed.exportedAt ?? null,
     uploadedAt: new Date().toISOString(),
-    count: listings.length,
-    listings,
+    count: deduped.length,
+    listings: deduped,
   };
   writeStore(store);
-  res.json({ success: true, count: listings.length });
+  res.json({ success: true, count: deduped.length });
 });
 
-// PATCH /api/listings/:index/status — update enquiry status for one listing
+// PATCH /api/listings/:index/status
 app.patch('/api/listings/:index/status', (req, res) => {
   const idx = parseInt(req.params.index, 10);
   const { status } = req.body as { status: string };
-
-  const VALID_STATUSES = [
-    'Not Contacted',
-    'Enquired',
-    'Viewing Scheduled',
-    'Viewed',
-    'Offer Made',
-    'Rejected',
-    'Shortlisted',
-  ];
-
-  if (!VALID_STATUSES.includes(status)) {
-    res.status(400).json({ error: 'Invalid status' });
-    return;
-  }
+  const VALID = ['Not Contacted','Enquired','Viewing Scheduled','Viewed','Offer Made','Rejected','Shortlisted'];
+  if (!VALID.includes(status)) { res.status(400).json({ error: 'Invalid status' }); return; }
 
   const store = readStore();
-  if (!store) {
-    res.status(404).json({ error: 'No data uploaded yet' });
-    return;
-  }
-  if (idx < 0 || idx >= store.listings.length) {
-    res.status(404).json({ error: 'Listing not found' });
-    return;
-  }
+  if (!store) { res.status(404).json({ error: 'No data uploaded yet' }); return; }
+  if (idx < 0 || idx >= store.listings.length) { res.status(404).json({ error: 'Listing not found' }); return; }
 
   store.listings[idx].enquiryStatus = status;
   writeStore(store);
   res.json({ success: true });
 });
 
-// ── Google Maps Distance Matrix proxy ────────────────────────────────────────
-// Proxies to Google Maps so the API key stays server-side and CORS is avoided.
-// GET /api/distance?origin=<addr>&destinations=<d1>|<d2>&mode=transit|walking
-// Returns: { results: [{ durationMins: number|null, distanceM: number|null }] }
-app.get('/api/distance', async (req: express.Request, res: express.Response) => {
-  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) {
-    res.status(503).json({ error: 'GOOGLE_MAPS_API_KEY not configured on server' });
-    return;
-  }
-
-  const { origin, destinations, mode = 'transit' } = req.query as Record<string, string>;
-  if (!origin || !destinations) {
-    res.status(400).json({ error: 'origin and destinations query params required' });
-    return;
-  }
-
-  try {
-    const params = new URLSearchParams({
-      origins: origin,
-      destinations,   // pipe-separated list
-      mode,
-      region: 'sg',
-      key: apiKey,
-    });
-    const gmUrl = `https://maps.googleapis.com/maps/api/distancematrix/json?${params}`;
-    const gmRes = await fetch(gmUrl);
-    const data = await gmRes.json() as {
-      status: string;
-      rows: { elements: { status: string; duration: { value: number }; distance: { value: number } }[] }[];
-    };
-
-    if (data.status !== 'OK') {
-      res.json({ results: [] });
-      return;
-    }
-
-    const results = (data.rows[0]?.elements ?? []).map(el => ({
-      durationMins: el.status === 'OK' ? Math.round(el.duration.value / 60) : null,
-      distanceM:    el.status === 'OK' ? el.distance.value : null,
-    }));
-    res.json({ results });
-  } catch (e) {
-    res.status(500).json({ error: 'Google Maps API call failed' });
-  }
-});
-
-// Serve React build in production
-// __dirname = /app/dist (compiled server), React build copied to /app/app/dist by Dockerfile
+// Serve React build
 const clientDist = path.join(__dirname, '..', 'app', 'dist');
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(clientDist, 'index.html'));
-  });
+  app.get('*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 } else {
-  app.get('*', (_req, res) => {
-    res.status(503).send('React build not found. Run "npm run build" in /app first.');
-  });
+  app.get('*', (_req, res) =>
+    res.status(503).send('React build not found. Run "npm run build" in /app first.'));
 }
 
-app.listen(PORT, () => {
-  console.log(`Househunter server running on port ${PORT}`);
-});
-
+app.listen(PORT, () => console.log(`Househunter server running on port ${PORT}`));
 export default app;
