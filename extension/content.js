@@ -19,7 +19,9 @@
   }
 
   function text(node) {
-    return node ? node.textContent.trim().replace(/\s+/g, ' ') : null;
+    if (!node) return null;
+    const t = node.textContent.trim().replace(/\s+/g, ' ');
+    return t.length > 300 ? null : t; // discard runaway strings (e.g. JSON-LD blobs)
   }
 
   function attr(node, a) {
@@ -28,6 +30,8 @@
 
   function findByText(el, re) {
     for (const node of el.querySelectorAll('*')) {
+      const tag = node.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') continue;
       if (node.children.length === 0 && re.test(node.textContent.trim())) return node;
     }
     return null;
