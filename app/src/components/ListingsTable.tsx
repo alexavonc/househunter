@@ -152,6 +152,7 @@ export default function ListingsTable({ listings, onStatusChange, commuteLabels 
             <SortTh label="Address" k="address" />
             <SortTh label="Nearest MRT" k="_mrtName" title="Nearest target MRT station" />
             <SortTh label="Walk to MRT" k="_walkMins" title="Walking time to nearest MRT (from PropertyGuru)" />
+            <SortTh label="Bus to MRT" k="_busMinsToMrt" title="Transit time to nearest MRT via Google Maps" />
             {commuteLabels.map(label => (
               <th key={label} style={{
                 padding: '10px 8px', background: '#fafafa', borderBottom: '2px solid var(--border)',
@@ -262,15 +263,15 @@ export default function ListingsTable({ listings, onStatusChange, commuteLabels 
                   {mins(listing._walkMins)}
                 </td>
 
-                {/* Commute destination columns */}
+                {/* Bus to nearest MRT (Google Maps transit) */}
+                <td style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
+                  {listing._busMinsToMrt != null ? `${listing._busMinsToMrt} min` : '…'}
+                </td>
+
+                {/* Commute destination columns (Google Maps transit) */}
                 {listing._commutes.map(c => (
-                  <td key={c.label} style={{ padding: '8px 10px', whiteSpace: 'nowrap', fontSize: 12 }}>
-                    {isFinite(c.walkMins) ? (
-                      <div>
-                        <div>🚶 {c.walkMins} min</div>
-                        <div style={{ color: 'var(--text-muted)' }}>🚌 {c.busMins} min</div>
-                      </div>
-                    ) : '—'}
+                  <td key={c.label} style={{ padding: '8px 10px', textAlign: 'center', whiteSpace: 'nowrap', fontSize: 12 }}>
+                    {c.transitMins != null ? `${c.transitMins} min` : '…'}
                   </td>
                 ))}
 

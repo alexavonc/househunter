@@ -175,6 +175,53 @@ app.patch('/api/listings/:index/status', (req, res) => {
   res.json({ success: true });
 });
 
+// ── Google Maps Distance Matrix proxy ────────────────────────────────────────
+// Proxies to Google Maps so the API key stays server-side and CORS is avoided.
+// GET /api/distance?origin=<addr>&destinations=<d1>|<d2>&mode=transit|walking
+// Returns: { results: [{ durationMins: number|null, distanceM: number|null }] }
+app.get('/api/distance', async (req: express.Request, res: express.Response) => {
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) {
+    res.status(503).json({ error: 'GOOGLE_MAPS_API_KEY not configured on server' });
+    return;
+  }
+
+  const { origin, destinations, mode = 'transit' } = req.query as Record<string, string>;
+  if (!origin || !destinations) {
+    res.status(400).json({ error: 'origin and destinations query params required' });
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams({
+      origins: origin,
+      destinations,   // pipe-separated list
+      mode,
+      region: 'sg',
+      key: apiKey,
+    });
+    const gmUrl = `https://maps.googleapis.com/maps/api/distancematrix/json?${params}`;
+    const gmRes = await fetch(gmUrl);
+    const data = await gmRes.json() as {
+      status: string;
+      rows: { elements: { status: string; duration: { value: number }; distance: { value: number } }[] }[];
+    };
+
+    if (data.status !== 'OK') {
+      res.json({ results: [] });
+      return;
+    }
+
+    const results = (data.rows[0]?.elements ?? []).map(el => ({
+      durationMins: el.status === 'OK' ? Math.round(el.duration.value / 60) : null,
+      distanceM:    el.status === 'OK' ? el.distance.value : null,
+    }));
+    res.json({ results });
+  } catch (e) {
+    res.status(500).json({ error: 'Google Maps API call failed' });
+  }
+});
+
 // Serve React build in production
 // __dirname = /app/dist (compiled server), React build copied to /app/app/dist by Dockerfile
 const clientDist = path.join(__dirname, '..', 'app', 'dist');

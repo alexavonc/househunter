@@ -119,6 +119,13 @@
     return [];
   }
 
+  // ── Pause support ─────────────────────────────────────────────────────────
+  async function waitIfPaused() {
+    while (window.__pgPaused) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+
   // ── Detail page scraper ───────────────────────────────────────────────────
   async function fetchDetail(url) {
     if (!url) return null;
@@ -176,6 +183,7 @@
   async function enrichListings(listings) {
     const BATCH = 3;
     for (let i = 0; i < listings.length; i += BATCH) {
+      await waitIfPaused();
       const batch = listings.slice(i, i + BATCH);
       const details = await Promise.all(batch.map(l => fetchDetail(l.url)));
       details.forEach((d, j) => {
@@ -221,6 +229,7 @@
     window.__pgScrapeStatus = 'page-2';
 
     for (let pg = 3; pg <= 50; pg++) {
+      await waitIfPaused();
       try {
         const doc = await fetchPage(pageUrl(pg));
         const cards = findCards(doc);
@@ -253,6 +262,7 @@
   async function scrapeViaClicks(seen, out) {
     let page = 1;
     while (page <= 50) {
+      await waitIfPaused();
       const nextBtn = findNextBtn();
       if (!nextBtn) break;
       const prevCount = findCards(document).length;

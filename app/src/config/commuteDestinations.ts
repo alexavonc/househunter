@@ -1,23 +1,14 @@
 /**
- * Fixed destinations to show commute time columns for.
- * - Provide lat/lng directly for well-known locations (no geocoding needed).
- * - Provide address to geocode via OneMap (geocoded once at app startup).
+ * Fixed destinations to show transit time columns for.
+ * gmapsQuery is passed directly to Google Maps Distance Matrix API as the destination.
+ * Add or remove entries freely — the table columns update automatically.
  */
 export interface CommuteDestination {
   label: string;       // Column header label
-  lat?: number;
-  lng?: number;
-  address?: string;    // Used when lat/lng not provided
+  gmapsQuery: string;  // Google Maps-resolvable address / place name
 }
 
 export const COMMUTE_DESTINATIONS: CommuteDestination[] = [
-  {
-    label: 'Newton MRT',
-    lat: 1.3132,
-    lng: 103.8380,
-  },
-  {
-    label: '817 Tampines St 81',
-    address: '817 Tampines Street 81',
-  },
+  { label: 'Newton MRT',       gmapsQuery: 'Newton MRT Station, Singapore' },
+  { label: '817 Tampines St 81', gmapsQuery: '817 Tampines Street 81, Singapore' },
 ];
