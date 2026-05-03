@@ -32,19 +32,25 @@ async function init() {
   }
 }
 
-// Poll until the content script signals it's done (or timeout)
-async function waitForScrape(tabId, timeoutMs = 30000) {
+// Poll until done, updating the status label with the current page number
+async function waitForScrape(tabId, timeoutMs = 120000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => ({ status: window.__pgScrapeStatus, listings: window.__pgScrapedListings }),
+      func: () => ({ status: window.__pgScrapeStatus, count: (window.__pgScrapedListings || []).length }),
     });
-    const { status, listings } = results?.[0]?.result ?? {};
-    if (status === 'done' && Array.isArray(listings)) return listings;
-    await new Promise(r => setTimeout(r, 600));
+    const { status, count } = results?.[0]?.result ?? {};
+    if (status === 'done') break;
+
+    // Show live progress: "Scraping page 3… (18 found so far)"
+    if (status && status.startsWith('page-')) {
+      const pg = status.split('-')[1];
+      setStatus(`<span class="spinner"></span>Scraping page ${pg}…${count ? ` (${count} found)` : ''}`);
+    }
+    await new Promise(r => setTimeout(r, 700));
   }
-  // Timeout — return whatever we have
+  // Return whatever was collected (even on timeout)
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => window.__pgScrapedListings,
