@@ -154,6 +154,18 @@ app.get('/api/listings', (_req, res) => {
   res.json(store ?? { listings: [], uploadedAt: null, count: 0 });
 });
 
+app.get('/api/status', (_req, res) => {
+  const store = readStore();
+  const listings = store?.listings ?? [];
+  const withTransit = listings.filter(l => l._transitTimes != null).length;
+  res.json({
+    googleMapsConfigured: !!process.env.GOOGLE_MAPS_API_KEY,
+    listingCount: listings.length,
+    listingsWithTransitTimes: withTransit,
+    listingsMissingTransitTimes: listings.length - withTransit,
+  });
+});
+
 // POST /api/upload
 // - Deduplicates by URL (first occurrence wins within the new file)
 // - Merges enquiry status and transit times from existing store by URL

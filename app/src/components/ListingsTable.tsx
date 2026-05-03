@@ -265,13 +265,13 @@ export default function ListingsTable({ listings, onStatusChange, commuteLabels 
 
                 {/* Bus to nearest MRT (Google Maps transit) */}
                 <td style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
-                  {listing._busMinsToMrt != null ? `${listing._busMinsToMrt} min` : '…'}
+                  {listing._busMinsToMrt != null ? `${listing._busMinsToMrt} min` : '—'}
                 </td>
 
                 {/* Commute destination columns (Google Maps transit) */}
                 {listing._commutes.map(c => (
                   <td key={c.label} style={{ padding: '8px 10px', textAlign: 'center', whiteSpace: 'nowrap', fontSize: 12 }}>
-                    {c.transitMins != null ? `${c.transitMins} min` : '…'}
+                    {c.transitMins != null ? `${c.transitMins} min` : '—'}
                   </td>
                 ))}
 
