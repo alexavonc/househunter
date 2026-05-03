@@ -4,6 +4,7 @@ export interface Listing {
   listingId: string | null;
   title: string | null;
   url: string | null;
+  imageUrl: string | null;
   price: string | null;
   pricePerSqft: string | null;
   size: string | null;

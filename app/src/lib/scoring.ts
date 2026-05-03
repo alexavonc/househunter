@@ -14,9 +14,43 @@ function haversineMetres(lat1: number, lng1: number, lat2: number, lng2: number)
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export function closestMrtMetres(lat: number, lng: number): number {
-  if (MRT_TARGETS.length === 0) return Infinity;
-  return Math.min(...MRT_TARGETS.map(t => haversineMetres(lat, lng, t.lat, t.lng)));
+export interface ClosestMrt {
+  distM: number;
+  name: string;
+  walkMins: number;
+  busMins: number;
+}
+
+export function closestMrt(lat: number, lng: number): ClosestMrt {
+  if (MRT_TARGETS.length === 0) {
+    return { distM: Infinity, name: '—', walkMins: Infinity, busMins: Infinity };
+  }
+  let bestDist = Infinity;
+  let bestName = '—';
+  for (const t of MRT_TARGETS) {
+    const d = haversineMetres(lat, lng, t.lat, t.lng);
+    if (d < bestDist) { bestDist = d; bestName = t.name; }
+  }
+  return {
+    distM: bestDist,
+    name: bestName,
+    walkMins: walkingMinutes(bestDist),
+    busMins: busMinutes(bestDist),
+  };
+}
+
+// Walking at 80 m/min (~4.8 km/h)
+export function walkingMinutes(distM: number): number {
+  if (!isFinite(distM)) return Infinity;
+  return Math.round(distM / 80);
+}
+
+// Estimated bus: 3 min walk to stop + 5 min wait + travel at ~20 km/h with 1.5× road factor
+// Minimum 8 min. For very short distances, walking is faster so we show walk instead.
+export function busMinutes(distM: number): number {
+  if (!isFinite(distM)) return Infinity;
+  const travel = (distM * 1.5) / (20000 / 60); // metres → minutes at 20 km/h
+  return Math.max(8, Math.round(3 + 5 + travel));
 }
 
 function clamp(v: number, lo: number, hi: number) {
@@ -27,14 +61,12 @@ function clamp(v: number, lo: number, hi: number) {
 
 export function mrtScore(distanceMetres: number): number {
   if (!isFinite(distanceMetres)) return 1;
-  // Linear mapping: SCORE_5_M → 5, SCORE_1_M → 1
   const ratio = (SCORE_1_M - distanceMetres) / (SCORE_1_M - SCORE_5_M);
   return clamp(Math.round(ratio * 4 + 1), 1, 5);
 }
 
 export function affordabilityScore(price: number, budgetCeiling: number): number {
   if (!budgetCeiling || price <= 0) return 1;
-  // Price well under budget → 5; at/over budget → 1
   const ratio = price / budgetCeiling;
   if (ratio <= 0.7) return 5;
   if (ratio <= 0.8) return 4;
@@ -43,10 +75,6 @@ export function affordabilityScore(price: number, budgetCeiling: number): number
   return 1;
 }
 
-/**
- * Size score: rank-based within the set.
- * Larger is better. Divide into quintiles.
- */
 export function sizeScores(sqftValues: number[]): number[] {
   const valid = sqftValues.filter(v => v > 0 && isFinite(v));
   if (valid.length === 0) return sqftValues.map(() => 1);
@@ -76,7 +104,6 @@ export function compositeScore(
 // ── Parse price string from PropertyGuru ────────────────────────────────────
 export function parsePrice(priceStr: string | null): number {
   if (!priceStr) return 0;
-  // e.g. "S$1,200,000", "$1.2M", "1,200,000"
   const cleaned = priceStr.replace(/[^0-9.KkMm]/g, '');
   const lower = cleaned.toLowerCase();
   if (lower.includes('m')) return parseFloat(lower) * 1_000_000;

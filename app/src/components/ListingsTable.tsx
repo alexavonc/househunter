@@ -24,7 +24,6 @@ const STATUS_COLORS: Record<Status, { bg: string; color: string }> = {
 };
 
 function scoreColor(score: number): string {
-  // 1 → red, 3 → yellow, 5 → green
   if (score >= 4.5) return '#1a7a1a';
   if (score >= 3.5) return '#5a8a00';
   if (score >= 2.5) return '#a07000';
@@ -53,6 +52,10 @@ function ScoreCell({ score }: { score: number }) {
       {score}
     </td>
   );
+}
+
+function mins(n: number) {
+  return isFinite(n) ? `${n} min` : '—';
 }
 
 type SortKey = keyof ScoredListing | null;
@@ -138,6 +141,7 @@ export default function ListingsTable({ listings, onStatusChange }: Props) {
         <thead>
           <tr>
             <SortTh label="#" k={null} />
+            <th style={{ padding: '10px 8px', background: '#fafafa', borderBottom: '2px solid var(--border)', fontSize: 12, color: 'var(--text-muted)' }}>Photo</th>
             <SortTh label="Title / Project" k="title" />
             <SortTh label="Price" k="_priceNum" />
             <SortTh label="$/sqft" k="pricePerSqft" />
@@ -145,7 +149,9 @@ export default function ListingsTable({ listings, onStatusChange }: Props) {
             <SortTh label="Beds" k="bedrooms" />
             <SortTh label="Baths" k="bathrooms" />
             <SortTh label="Address" k="address" />
-            <SortTh label="MRT" k="mrtInfo" />
+            <SortTh label="Nearest MRT" k="_mrtName" title="Nearest target MRT station" />
+            <SortTh label="Walk" k="_walkMins" title="Walking time to nearest MRT" />
+            <SortTh label="Bus (est.)" k="_busMins" title="Estimated bus time to nearest MRT (includes walk to stop + wait)" />
             <SortTh label="MRT Score" k="mrtScore" title="1–5: proximity to target MRT stations" />
             <SortTh label="Afford." k="affordabilityScore" title="1–5: affordability relative to your budget" />
             <SortTh label="Size Score" k="sizeScore" title="1–5: size relative to other listings" />
@@ -178,8 +184,26 @@ export default function ListingsTable({ listings, onStatusChange }: Props) {
                   {rowIdx + 1}
                 </td>
 
+                {/* Photo */}
+                <td style={{ padding: '4px 8px', width: 80 }}>
+                  {listing.imageUrl ? (
+                    <a href={listing.url ?? '#'} target="_blank" rel="noreferrer">
+                      <img
+                        src={listing.imageUrl}
+                        alt=""
+                        style={{ width: 72, height: 54, objectFit: 'cover', borderRadius: 4, display: 'block' }}
+                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    </a>
+                  ) : (
+                    <div style={{ width: 72, height: 54, background: '#f0f0f0', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>
+                      🏠
+                    </div>
+                  )}
+                </td>
+
                 {/* Title */}
-                <td style={{ padding: '8px 10px', maxWidth: 220, minWidth: 160 }}>
+                <td style={{ padding: '8px 10px', maxWidth: 200, minWidth: 140 }}>
                   {listing.url ? (
                     <a href={listing.url} target="_blank" rel="noreferrer"
                       style={{ fontWeight: 600, display: 'block', marginBottom: 2 }}>
@@ -216,17 +240,23 @@ export default function ListingsTable({ listings, onStatusChange }: Props) {
                 </td>
 
                 {/* Address */}
-                <td style={{ padding: '8px 10px', color: 'var(--text-muted)', maxWidth: 200 }}>
+                <td style={{ padding: '8px 10px', color: 'var(--text-muted)', maxWidth: 180 }}>
                   {listing.address || '—'}
                 </td>
 
-                {/* MRT info */}
-                <td style={{ padding: '8px 10px', color: 'var(--text-muted)', whiteSpace: 'nowrap', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {listing.mrtInfo || (
-                    isFinite(listing._mrtDistM)
-                      ? `~${Math.round(listing._mrtDistM)}m`
-                      : '—'
-                  )}
+                {/* Nearest MRT name */}
+                <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', fontWeight: 500, fontSize: 12 }}>
+                  {listing._mrtName || '—'}
+                </td>
+
+                {/* Walking minutes */}
+                <td style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                  {mins(listing._walkMins)}
+                </td>
+
+                {/* Bus minutes (estimated) */}
+                <td style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
+                  {mins(listing._busMins)}
                 </td>
 
                 {/* MRT Score */}

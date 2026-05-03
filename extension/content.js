@@ -102,7 +102,22 @@
 
     const listingId = card.dataset.listingId || card.dataset.id || attr(card, 'id') || null;
 
-    return { listingId, title, url, price, pricePerSqft, size, address, bedrooms, bathrooms, mrtInfo };
+    // Listing image — prefer data-src (lazy-loaded) over src to avoid placeholder blanks
+    const imgNode = card.querySelector('img[data-src], img[data-original], img[src]');
+    let imageUrl = null;
+    if (imgNode) {
+      const candidate = imgNode.getAttribute('data-src') ||
+                        imgNode.getAttribute('data-original') ||
+                        imgNode.getAttribute('src');
+      // Skip 1x1 tracking pixels, blank SVGs, and base64 placeholders
+      if (candidate && !candidate.includes('1x1') && !candidate.includes('blank') &&
+          !candidate.startsWith('data:') && !candidate.endsWith('.svg')) {
+        imageUrl = candidate.startsWith('http') ? candidate
+          : 'https://www.propertyguru.com.sg' + candidate;
+      }
+    }
+
+    return { listingId, title, url, imageUrl, price, pricePerSqft, size, address, bedrooms, bathrooms, mrtInfo };
   }
 
   // ── Find all listing cards in a document (current page or fetched HTML) ──

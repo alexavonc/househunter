@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { fetchListings, uploadFile, updateStatus, type Listing, type StoreData } from './lib/api';
 import { geocodeAddress } from './lib/geocode';
 import {
-  closestMrtMetres,
+  closestMrt,
   mrtScore,
   affordabilityScore,
   sizeScores,
@@ -21,6 +21,9 @@ export interface ScoredListing extends Listing {
   _priceNum: number;
   _sqftNum: number;
   _mrtDistM: number;
+  _mrtName: string;
+  _walkMins: number;
+  _busMins: number;
   mrtScore: number;
   affordabilityScore: number;
   sizeScore: number;
@@ -57,8 +60,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Geocode cache keyed by address
-  const [geoCache, setGeoCache] = useState<Map<string, number>>(new Map());
+  // Geocode cache keyed by address → closest MRT result
+  const [geoCache, setGeoCache] = useState<Map<string, ReturnType<typeof closestMrt>>>(new Map());
 
   const loadData = useCallback(async () => {
     try {
@@ -88,7 +91,7 @@ export default function App() {
 
     (async () => {
       const listings = storeData.listings;
-      const distMap = new Map<string, number>(geoCache);
+      const distMap = new Map<string, ReturnType<typeof closestMrt>>(geoCache);
       let done = 0;
 
       for (const listing of listings) {
@@ -96,11 +99,10 @@ export default function App() {
         const addr = listing.address || listing.title || '';
         if (addr && !distMap.has(addr)) {
           const coords = await geocodeAddress(addr);
-          if (coords) {
-            distMap.set(addr, closestMrtMetres(coords.lat, coords.lng));
-          } else {
-            distMap.set(addr, Infinity);
-          }
+          distMap.set(addr, coords
+            ? closestMrt(coords.lat, coords.lng)
+            : { distM: Infinity, name: '—', walkMins: Infinity, busMins: Infinity },
+          );
         }
         done++;
         setGeocodeProgress(Math.round((done / listings.length) * 100));
@@ -124,15 +126,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weights, budgetCeiling, geoCache]);
 
-  function rebuildScores(listings: Listing[], distMap: Map<string, number>) {
+  function rebuildScores(listings: Listing[], distMap: Map<string, ReturnType<typeof closestMrt>>) {
     const prices = listings.map(l => parsePrice(l.price));
     const sqfts = listings.map(l => parseSqft(l.size));
     const sizeScoreArr = sizeScores(sqfts);
 
     const scored: ScoredListing[] = listings.map((l, i) => {
       const addr = l.address || l.title || '';
-      const distM = distMap.get(addr) ?? Infinity;
-      const mrt = mrtScore(distM);
+      const geo = distMap.get(addr) ?? { distM: Infinity, name: '—', walkMins: Infinity, busMins: Infinity };
+      const mrt = mrtScore(geo.distM);
       const afford = affordabilityScore(prices[i], budgetCeiling);
       const sz = sizeScoreArr[i];
       const comp = compositeScore(mrt, afford, sz, weights);
@@ -141,7 +143,10 @@ export default function App() {
         _index: i,
         _priceNum: prices[i],
         _sqftNum: sqfts[i],
-        _mrtDistM: distM,
+        _mrtDistM: geo.distM,
+        _mrtName: geo.name,
+        _walkMins: geo.walkMins,
+        _busMins: geo.busMins,
         mrtScore: mrt,
         affordabilityScore: afford,
         sizeScore: sz,
@@ -194,7 +199,10 @@ export default function App() {
       Address: l.address ?? '',
       Bedrooms: l.bedrooms ?? '',
       Bathrooms: l.bathrooms ?? '',
-      MRT: l.mrtInfo ?? '',
+      'MRT Info': l.mrtInfo ?? '',
+      'Nearest MRT': l._mrtName,
+      'Walk to MRT (min)': isFinite(l._walkMins) ? l._walkMins : '',
+      'Bus to MRT (min, est.)': isFinite(l._busMins) ? l._busMins : '',
       'MRT Score': l.mrtScore,
       'Affordability Score': l.affordabilityScore,
       'Size Score': l.sizeScore,
