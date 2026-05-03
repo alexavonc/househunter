@@ -47,6 +47,9 @@ async function waitForScrape(tabId, timeoutMs = 120000) {
     if (status && status.startsWith('page-')) {
       const pg = status.split('-')[1];
       setStatus(`<span class="spinner"></span>Scraping page ${pg}…${count ? ` (${count} found)` : ''}`);
+    } else if (status && status.startsWith('details-')) {
+      const [, done, , total] = status.split('-');
+      setStatus(`<span class="spinner"></span>Fetching listing details… ${done}/${total}`);
     }
     await new Promise(r => setTimeout(r, 700));
   }

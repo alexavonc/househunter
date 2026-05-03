@@ -75,6 +75,47 @@ export function mrtScore(distanceMetres: number): number {
   return clamp(Math.round(ratio * 4 + 1), 1, 5);
 }
 
+/**
+ * Parse PropertyGuru's MRT info string, e.g.:
+ *   "180 m (2 mins) from NE16/STC Sengkang MRT"
+ *   "350 m (5 mins) from Orchard MRT"
+ */
+export interface ParsedMrt {
+  distM: number;       // metres
+  walkMins: number;    // minutes
+  stationName: string; // e.g. "Sengkang MRT"
+}
+
+export function parseMrtInfo(mrtInfo: string | null): ParsedMrt | null {
+  if (!mrtInfo) return null;
+  // Match distance in metres
+  const distMatch = mrtInfo.match(/(\d[\d,]*)\s*m\b/i);
+  const distM = distMatch ? parseInt(distMatch[1].replace(/,/g, ''), 10) : NaN;
+  // Match walk minutes
+  const minsMatch = mrtInfo.match(/\((\d+)\s*min/i);
+  const walkMins = minsMatch ? parseInt(minsMatch[1], 10) : NaN;
+  // Match station name — everything after "from" up to end
+  const stationMatch = mrtInfo.match(/from\s+(?:[A-Z0-9\/]+\s+)?(.+)/i);
+  const stationName = stationMatch ? stationMatch[1].trim() : '';
+
+  if (!stationName) return null;
+  return {
+    distM: isNaN(distM) ? walkMins * 80 : distM, // estimate metres if missing
+    walkMins: isNaN(walkMins) ? Math.round((isNaN(distM) ? Infinity : distM) / 80) : walkMins,
+    stationName,
+  };
+}
+
+export function mrtScoreFromWalkMins(walkMins: number): number {
+  if (!isFinite(walkMins)) return 1;
+  // ≤5 min → 5, ≤8 → 4, ≤12 → 3, ≤20 → 2, >20 → 1
+  if (walkMins <= 5) return 5;
+  if (walkMins <= 8) return 4;
+  if (walkMins <= 12) return 3;
+  if (walkMins <= 20) return 2;
+  return 1;
+}
+
 export function affordabilityScore(price: number, budgetCeiling: number): number {
   if (!budgetCeiling || price <= 0) return 1;
   const ratio = price / budgetCeiling;

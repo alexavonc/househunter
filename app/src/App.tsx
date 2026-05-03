@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { fetchListings, uploadFile, updateStatus, type Listing, type StoreData } from './lib/api';
 import { geocodeAddress } from './lib/geocode';
 import {
-  closestMrt,
-  mrtScore,
+  mrtScoreFromWalkMins,
+  parseMrtInfo,
   affordabilityScore,
   sizeScores,
   compositeScore,
@@ -32,7 +32,6 @@ export interface ScoredListing extends Listing {
   _mrtDistM: number;
   _mrtName: string;
   _walkMins: number;
-  _busMins: number;
   _commutes: CommuteTimes[];
   mrtScore: number;
   affordabilityScore: number;
@@ -73,10 +72,11 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [geoCache, setGeoCache] = useState<Map<string, ReturnType<typeof closestMrt>>>(new Map());
   const [resolvedDests, setResolvedDests] = useState<ResolvedDest[]>([]);
+  // Geocode cache for listing addresses → coords (used only for commute destinations)
+  const [listingCoords, setListingCoords] = useState<Map<string, { lat: number; lng: number } | null>>(new Map());
 
-  // Geocode any commute destinations that don't have lat/lng hardcoded
+  // Geocode commute destinations that don't have hardcoded lat/lng
   useEffect(() => {
     (async () => {
       const resolved: ResolvedDest[] = [];
@@ -107,76 +107,42 @@ export default function App() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Geocode all listings whenever storeData changes
+  // Geocode listing addresses for commute destination distances
   useEffect(() => {
-    if (!storeData || storeData.listings.length === 0) {
-      setScoredListings([]);
-      return;
-    }
-
+    if (!storeData || resolvedDests.length === 0) return;
     let cancelled = false;
     setGeocoding(true);
     setGeocodeProgress(0);
 
     (async () => {
       const listings = storeData.listings;
-      const distMap = new Map<string, ReturnType<typeof closestMrt>>(geoCache);
+      const cache = new Map(listingCoords);
       let done = 0;
-
-      for (const listing of listings) {
+      for (const l of listings) {
         if (cancelled) break;
-        const addr = listing.address || listing.title || '';
-        if (addr && !distMap.has(addr)) {
-          const coords = await geocodeAddress(addr);
-          distMap.set(addr, coords
-            ? closestMrt(coords.lat, coords.lng)
-            : { distM: Infinity, name: '—', walkMins: Infinity, busMins: Infinity },
-          );
+        const addr = l.address || l.title || '';
+        if (addr && !cache.has(addr)) {
+          cache.set(addr, await geocodeAddress(addr));
         }
         done++;
         setGeocodeProgress(Math.round((done / listings.length) * 100));
       }
-
       if (!cancelled) {
-        setGeoCache(new Map(distMap));
-        rebuildScores(listings, distMap);
+        setListingCoords(new Map(cache));
         setGeocoding(false);
       }
     })();
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeData]);
+  }, [storeData, resolvedDests]);
 
-  // Rebuild scores when weights/budget/destinations change
+  // Rebuild scores whenever data, weights, budget, or geocoded coords change
   useEffect(() => {
     if (!storeData) return;
-    rebuildScores(storeData.listings, geoCache);
+    rebuildScores(storeData.listings);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weights, budgetCeiling, geoCache, resolvedDests]);
-
-  // Per-listing geocode cache for commute destination travel times
-  const [listingCoords, setListingCoords] = useState<Map<string, { lat: number; lng: number } | null>>(new Map());
-
-  // Geocode listing addresses for commute time calculation
-  useEffect(() => {
-    if (!storeData || resolvedDests.length === 0) return;
-    const listings = storeData.listings;
-    const newCache = new Map(listingCoords);
-    let dirty = false;
-    (async () => {
-      for (const l of listings) {
-        const addr = l.address || l.title || '';
-        if (addr && !newCache.has(addr)) {
-          const coords = await geocodeAddress(addr);
-          newCache.set(addr, coords);
-          dirty = true;
-        }
-      }
-      if (dirty) setListingCoords(new Map(newCache));
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeData, resolvedDests]);
+  }, [storeData, weights, budgetCeiling, listingCoords, resolvedDests]);
 
   function computeCommutes(listing: Listing): CommuteTimes[] {
     if (resolvedDests.length === 0) return [];
@@ -189,15 +155,19 @@ export default function App() {
     }));
   }
 
-  function rebuildScores(listings: Listing[], distMap: Map<string, ReturnType<typeof closestMrt>>) {
+  function rebuildScores(listings: Listing[]) {
     const prices = listings.map(l => parsePrice(l.price));
     const sqfts = listings.map(l => parseSqft(l.size));
     const sizeScoreArr = sizeScores(sqfts);
 
     const scored: ScoredListing[] = listings.map((l, i) => {
-      const addr = l.address || l.title || '';
-      const geo = distMap.get(addr) ?? { distM: Infinity, name: '—', walkMins: Infinity, busMins: Infinity };
-      const mrt = mrtScore(geo.distM);
+      // Use PropertyGuru's own MRT info (scraped from detail page)
+      const parsed = parseMrtInfo(l.mrtInfo);
+      const mrtDistM = parsed?.distM ?? Infinity;
+      const mrtName = parsed?.stationName ?? '—';
+      const walkMins = parsed?.walkMins ?? Infinity;
+
+      const mrt = mrtScoreFromWalkMins(walkMins);
       const afford = affordabilityScore(prices[i], budgetCeiling);
       const sz = sizeScoreArr[i];
       const comp = compositeScore(mrt, afford, sz, weights);
@@ -206,10 +176,9 @@ export default function App() {
         _index: i,
         _priceNum: prices[i],
         _sqftNum: sqfts[i],
-        _mrtDistM: geo.distM,
-        _mrtName: geo.name,
-        _walkMins: geo.walkMins,
-        _busMins: geo.busMins,
+        _mrtDistM: mrtDistM,
+        _mrtName: mrtName,
+        _walkMins: walkMins,
         _commutes: computeCommutes(l),
         mrtScore: mrt,
         affordabilityScore: afford,
@@ -277,7 +246,6 @@ export default function App() {
         'MRT Info': l.mrtInfo ?? '',
         'Nearest MRT': l._mrtName,
         'Walk to MRT (min)': isFinite(l._walkMins) ? l._walkMins : '',
-        'Bus to MRT est. (min)': isFinite(l._busMins) ? l._busMins : '',
         ...commuteVals,
         'MRT Score': l.mrtScore,
         'Affordability Score': l.affordabilityScore,

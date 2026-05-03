@@ -151,8 +151,7 @@ export default function ListingsTable({ listings, onStatusChange, commuteLabels 
             <SortTh label="Baths" k="bathrooms" />
             <SortTh label="Address" k="address" />
             <SortTh label="Nearest MRT" k="_mrtName" title="Nearest target MRT station" />
-            <SortTh label="Walk" k="_walkMins" title="Walking time to nearest MRT" />
-            <SortTh label="Bus (est.)" k="_busMins" title="Estimated bus time to nearest MRT (includes walk to stop + wait)" />
+            <SortTh label="Walk to MRT" k="_walkMins" title="Walking time to nearest MRT (from PropertyGuru)" />
             {commuteLabels.map(label => (
               <th key={label} style={{
                 padding: '10px 8px', background: '#fafafa', borderBottom: '2px solid var(--border)',
@@ -261,11 +260,6 @@ export default function ListingsTable({ listings, onStatusChange, commuteLabels 
                 {/* Walking minutes */}
                 <td style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap' }}>
                   {mins(listing._walkMins)}
-                </td>
-
-                {/* Bus minutes (estimated) */}
-                <td style={{ padding: '8px 8px', textAlign: 'center', whiteSpace: 'nowrap', color: 'var(--text-muted)' }}>
-                  {mins(listing._busMins)}
                 </td>
 
                 {/* Commute destination columns */}
