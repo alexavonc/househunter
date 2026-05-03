@@ -176,11 +176,16 @@ app.patch('/api/listings/:index/status', (req, res) => {
 });
 
 // Serve React build in production
-const clientDist = path.join(__dirname, '..', '..', 'app', 'dist');
+// __dirname = /app/dist (compiled server), React build copied to /app/app/dist by Dockerfile
+const clientDist = path.join(__dirname, '..', 'app', 'dist');
 if (fs.existsSync(clientDist)) {
   app.use(express.static(clientDist));
   app.get('*', (_req, res) => {
     res.sendFile(path.join(clientDist, 'index.html'));
+  });
+} else {
+  app.get('*', (_req, res) => {
+    res.status(503).send('React build not found. Run "npm run build" in /app first.');
   });
 }
 
