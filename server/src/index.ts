@@ -15,7 +15,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // ── Commute destinations (keep in sync with app/src/config/commuteDestinations.ts) ──
 const COMMUTE_DESTINATIONS = [
-  { label: 'One-North MRT',      gmapsQuery: 'one-north MRT Station, Singapore' },
+  { label: 'New Phoenix Park',   gmapsQuery: 'New Phoenix Park, Novena, Singapore' },
   { label: '817 Tampines St 81', gmapsQuery: '817 Tampines Street 81, Singapore' },
   { label: 'GovTech PDD',        gmapsQuery: 'Punggol Digital District, Singapore' },
 ];
